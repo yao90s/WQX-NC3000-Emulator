@@ -85,8 +85,8 @@ extern BYTE &w01_int_enable;
 extern int &timer0ticks;
 extern int &timer1ticks;
 
-/* [row][column]; NC3000 has 16 column lines (8 on port0, 8 on port6) */
-extern unsigned /*char*/ keypadmatrix[8][16];
+/* [row][column]; 8 rows (P10..P17) x 8 columns */
+extern unsigned keypadmatrix[8][8];
 
 BYTE __iocallconv NullRead (BYTE read);
 void __iocallconv NullWrite (BYTE write, BYTE value);

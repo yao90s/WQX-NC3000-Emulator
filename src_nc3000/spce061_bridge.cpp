@@ -1,5 +1,11 @@
 #include "spce061_bridge.h"
 
+/* dynarec 准备（改造计划 §35）：指令直方图计数在 unsp.c 里，dump 在 nc3000_dsp.c 里 */
+extern "C" {
+extern int  unsp_hist_enabled;
+void        n3_opcode_hist_dump(void);
+}
+
 #include <cstdio>
 #include <cstring>
 #include <chrono>
@@ -12,8 +18,22 @@ extern nc2k_states_t nc2k_states;
 extern "C" {
 #include "spce061a.h"
 #include "unsp.h"
+#include "unsp_jit.h"
 #include "nc3000_dsp.h"
 }
+
+/*
+ * 可选加速器：061 的 x86-64 dynarec（spce061a/emu/unsp_jit_x64.c）。
+ *
+ * 注册进来之后，`n3_run_steps()` 在 `NC3_JIT=1` 时会先让 JIT 跑一片（JIT 内部
+ * 逐条调用与解释器同一个 pre/post 钩子，语义逐字节一致），剩下的条数照旧走
+ * 解释器；JIT 不可用（32 位 XP 版 / 非 x86-64）时 unsp_jit_run() 恒返回 0，
+ * 一切照旧。不设 NC3_JIT 时走的是解释器，和以前完全一样。
+ */
+static const n3_jit_ops k_n3_jit_ops = {
+    unsp_jit_create, unsp_jit_destroy, unsp_jit_set_hooks,
+    unsp_jit_reset, unsp_jit_run, unsp_jit_run_one, unsp_jit_stats
+};
 
 /* firmware images (spce061a/host/firmware_061_nand.c and spce061a/emu/firmware_061.c) */
 extern "C" const uint16_t firmware_061_nand[];
@@ -65,6 +85,8 @@ int nc3_dsp_verbose = 0;
 
 /* NC3_PERF：跑 061 累计花掉的墙上时间（微秒），见 spce061_bridge.h。 */
 double nc3_dsp_busy_us = 0.0;
+/* 061 第一次启动的墙上时刻，用来在退出时报告"061 占了多少墙上时间" */
+static std::chrono::steady_clock::time_point g_dsp_t0;
 
 int nc3_dsp_insns_for(uint64_t main_cycles) {
     uint64_t insns = (main_cycles * (uint64_t)N3_INSN_PER_SEC) / (uint64_t)CYCLES_SECOND;
@@ -203,6 +225,7 @@ static void boot_fw(int use_nand) {
     }
 
     spce_init(&g_dsp, g_fw_img, N3_FW_BASE, N3_FW_END);
+    n3_jit_reset();     /* 换固件/重新 init：丢掉按旧 ROM 翻译出来的块 */
     /* the dumped image has no vector table at 0xFFF4..0xFFFF; rebuild it from 0xFC00 */
     for (i = 0; i < 11; i++) g_dsp.cpu.vec_area[i] = g_fw_img[N3_VEC_TABLE + i - N3_FW_BASE];
     g_dsp.cpu.vec_loaded = 1;
@@ -222,6 +245,9 @@ static void boot_fw(int use_nand) {
 
 int nc3_dsp_boot(void) {
     if (getenv("NC3_DSP_NAND")) g_use_nand = 1;   /* 想看 284F 那版固件时用 */
+    if (g_dsp_t0.time_since_epoch().count() == 0)
+        g_dsp_t0 = std::chrono::steady_clock::now();
+    n3_set_jit(&k_n3_jit_ops);    /* 告诉 nc3000_dsp.c“有加速器可用”（NC3_JIT=1 才真的用）*/
     boot_fw(g_use_nand);
     printf("[061] %s firmware, reset entry $%04X\n",
            g_use_nand ? "NAND 升级061.bin(284F)" : "061.dat(283D,真机同款)", g_dsp.cpu.r[7]);
@@ -229,6 +255,10 @@ int nc3_dsp_boot(void) {
     /* run the 061 through its own start-up */
     n3_run_steps(&g_link, 400000);
     g_up = 1;
+    {
+        /* dynarec 准备：NC3_JIT_HIST=1 → 统计指令直方图（见改造计划 §35） */
+        unsp_hist_enabled = getenv("NC3_JIT_HIST") ? 1 : 0;
+    }
     return 1;
 }
 
@@ -479,6 +509,27 @@ void nc3_dsp_stats(void) {
            (unsigned)(g_dsp.audio_head - g_dsp.audio_tail),
            spce_dac_sample_rate(&g_dsp));
     printf("[061] dac fired=%llu (host-clocked)\n", (unsigned long long)g_dsp_fired);
+    printf("[061] int_ctrl=%04X timerA_ctrl=%04X timerA_data=%04X timerB_ctrl=%04X khz_on=%u\n",
+           g_dsp.int_ctrl, g_dsp.timer_a_ctrl, g_dsp.timer_a_data, g_dsp.timer_b_ctrl,
+           (unsigned)g_dsp.khz_on);
+    {
+        /* 061 到底占了多少墙上时间：nc3_dsp_busy_us 由 nc3_dsp_run() 自己累计，
+         * 分母是"061 第一次启动到现在"。慢机器上排查"优化哪一块"看这行。 */
+        double wall = (double)std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::steady_clock::now() - g_dsp_t0).count();
+        printf("[061] busy=%.3fs / wall=%.3fs = %.1f%%\n",
+               nc3_dsp_busy_us / 1e6, wall / 1e6,
+               wall > 0.0 ? 100.0 * nc3_dsp_busy_us / wall : 0.0);
+    }
+    if (g_up) {
+        if (unsp_hist_enabled) n3_opcode_hist_dump();
+    }
+    if (getenv("NC3_JIT")) {
+        uint32_t blk = 0, bytes = 0, fl = 0;
+        n3_jit_stats(&blk, &bytes, &fl);
+        printf("[jit] dynarec blocks=%u code=%.1f KB flushes=%u\n",
+               (unsigned)blk, (double)bytes / 1024.0, (unsigned)fl);
+    }
 }
 
 int nc3_dsp_audio(int16_t *out, int n) {

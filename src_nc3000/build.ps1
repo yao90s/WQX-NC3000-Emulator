@@ -57,6 +57,7 @@ $coreSources = @(
 # the SPCE061A emulator is plain C99 and is compiled separately with gcc
 $cSources = @(
     (Join-Path $spce 'emu\unsp.c'),
+    (Join-Path $spce 'emu\unsp_jit_x64.c'),
     (Join-Path $spce 'emu\spce061a.c'),
     (Join-Path $spce 'emu\firmware_061.c'),
     (Join-Path $spce 'host\firmware_061_nand.c'),

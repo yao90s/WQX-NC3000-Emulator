@@ -40,6 +40,7 @@ include_directories("../spce061a/host/")
 
 set(SPCE_SRC
     ../spce061a/emu/unsp.c
+    ../spce061a/emu/unsp_jit_x64.c
     ../spce061a/emu/spce061a.c
     ../spce061a/emu/firmware_061.c
     ../spce061a/host/firmware_061_nand.c

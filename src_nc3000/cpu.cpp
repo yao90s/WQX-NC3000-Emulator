@@ -61,26 +61,14 @@ int CPUInterface::execute(int max_cycles){
 		mI = true;     //todo: is this needed?
     }
 
-    do{
-		if(mi_clear_delay){
-			mi_clear_delay--;
-		}else if (g_irq && !mI){
-			g_irq = false;
-			{ extern uint32_t nc3_irq_taken; nc3_irq_taken++; }
-			if(enable_dyn_debug_next_n||enable_dyn_debug||enable_debug_pc) printf("execute irq!!!!!!!\n");
-			cycle+=CpuExecuteIRQ();
-			//cycle+=1;
-		}
-
-		void debug_pc();
-		debug_pc();
-		if(g_wai) {cycle=max_cycles;if(cycle<=0) cycle=jam_cycles;break;}
-		bool old_mi=mI;
-		cycle += CpuExecuteOP();
-		if(old_mi==true && mI==false) {//mI flipped from true to false
-			mi_clear_delay=mi_clear_delay_value;
-		}
-    }while(cycle<=max_cycles);
+    /*
+     * 线程化（computed goto）批量执行：循环语义与原来完全一样
+     * （IRQ / mi_clear_delay / WAIT / 每条一次 debug_pc），只是把派发从
+     * “每条指令一次 CpuExecuteOP() 调用 + switch 跳转表”换成直接跳转，
+     * 见 ansi/w65c02op.cpp 里的 w65c02_run<>()。
+     */
+    cycle = CpuExecuteOPBatch((DWORD)cycle, (DWORD)max_cycles,
+                              &mi_clear_delay, mi_clear_delay_value);
 
 	int res=cycle;
 	cycle=0;

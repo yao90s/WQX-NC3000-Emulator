@@ -22,10 +22,43 @@ extern nc2k_states_t nc2k_states;
 
 uint8_t* memmap[8];
 
+/* 给 ansi 6502 核的写快路（ansi/w65c02.h 的 CPU_POKE）用：nc2k_states 里那几块
+ * **可写** RAM 的地址区间。Store() 的判定顺序里，非 NOR 页只要判这四块；指针在
+ * 整个进程里不变（nc2k_states 是全局数组），所以在 init_mem() 里赋一次就行。
+ * 没赋值（=0）时快路会全部落回 Store()，语义不受影响。 */
+uint8_t *nc3_wram_b, *nc3_wram_b2, *nc3_wram_lo, *nc3_wram_hi,
+        *nc3_wext_lo, *nc3_wext_hi;
+
+/* 访存快路的差分校验开关（环境变量 NC3_FASTMEM_CHECK=1 打开）：
+ * 快路命中时再走一遍完整的 CLoad()，两者不一致就打印 —— 用来证明/复查
+ * ansi/w65c02.h 里那两条内联快路与 Load() 逐字节等价。 */
+int nc3_fastmem_check = 0;
+uint32_t nc3_fastmem_rd_hits = 0;
+void (*nc3_fastmem_bad_cb)(uint16_t addr, uint8_t fast, uint8_t slow) = 0;
+
+static void fastmem_bad_report(uint16_t addr, uint8_t fast, uint8_t slow)
+{
+	extern CPUInterface *cpu;
+	printf("[fastmem] RD $%04X fast=%02X slow=%02X pc=$%04X\n",
+	       addr, fast, slow, cpu ? (uint16_t)cpu->PC : 0);
+	fflush(stdout);
+}
+
 
 void init_mem(){	
 	memmap[0] = ram00;
 	super_switch(); //will segfault if commented out, since some legacy code is access the memmap
+	nc3_wram_b   = nc2k_states.ram_b;
+	nc3_wram_b2  = nc2k_states.ram_b2;
+	nc3_wram_lo  = nc2k_states.ram;
+	nc3_wram_hi  = nc2k_states.ram + sizeof(nc2k_states.ram);
+	nc3_wext_lo  = nc2k_states.ext_ram;
+	nc3_wext_hi  = nc2k_states.ext_ram + sizeof(nc2k_states.ext_ram);
+	{
+		extern char *getenv(const char *);
+		nc3_fastmem_check = getenv("NC3_FASTMEM_CHECK") ? 1 : 0;
+		if (nc3_fastmem_check) nc3_fastmem_bad_cb = fastmem_bad_report;
+	}
 }
 
 /*

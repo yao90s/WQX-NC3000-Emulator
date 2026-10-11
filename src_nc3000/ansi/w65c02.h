@@ -145,6 +145,40 @@ unsigned short GetWord(unsigned short address);
 // TODO: should place io operation in first case to prefer io speed (side effect: slown down other normal memory access)
 inline uint8_t CPU_PEEK(uint16_t addr){
   uint8_t CLoad(uint16_t);
+  extern uint8_t* memmap[8];
+  extern uint8_t nor_buff[];
+  extern uint32_t NOR_SIZE;
+  extern uint8_t* ram_40;
+  extern int dbg_load_watch_addr;
+  /* 快路（2026-10-11）：普通内存访问本来要穿 CLoad→Load→dummy_io_for_read→
+   * read_nor→Peek16 五层调用；一条 6502 指令要有 2~4 次访存，这里就是大头。
+   * 判定顺序与 mem.cpp 的 Load() **完全一致**，只要有任何一条不成立就落回 CLoad()：
+   *   1) --watch-read 没开（dbg_load_watch_addr<0）
+   *   2) 不是 nc1020tw 的调试观察模式
+   *   3) 不在 IO 区（addr>=IO_LIMIT=0x40）且不是 dummy_io 认的 0x3fff
+   *   4) 当前 memmap 页不在 NOR 窗口里（= Load 里 read_nor() 会返回 false）
+   * 剩下的 addr<0x80 → ram_40，否则就是 memmap 页里的普通内存。 */
+  extern bool nc1020tw_mode;
+  extern int debug_level;
+  if (dbg_load_watch_addr < 0 && !(nc1020tw_mode && debug_level >= 2) &&
+      addr >= 0x40u && addr != 0x3fffu) {
+    uint8_t *page = memmap[addr >> 13];
+    if (page < nor_buff || page >= nor_buff + NOR_SIZE) {
+      extern int nc3_fastmem_check;
+      extern uint32_t nc3_fastmem_rd_hits;
+      extern void (*nc3_fastmem_bad_cb)(uint16_t, uint8_t, uint8_t);
+      if (addr >= 0x80u) {
+        uint8_t v = page[addr & 0x1FFF];
+        if (nc3_fastmem_check) {          /* NC3_FASTMEM_CHECK=1：与慢路逐字节核对 */
+          uint8_t s = CLoad(addr);
+          nc3_fastmem_rd_hits++;
+          if (s != v && nc3_fastmem_bad_cb) nc3_fastmem_bad_cb(addr, v, s);
+        }
+        return v;
+      }
+      return ram_40[addr - 0x40];
+    }
+  }
   return CLoad(addr);
   /*
     if(addr >= 0x80) {
@@ -161,6 +195,32 @@ inline uint16_t CPU_PEEKW(uint16_t addr){
 inline void CPU_POKE(uint16_t addr, uint8_t a)   
 { 
   void       CStore(uint16_t addr, uint8_t value);
+  extern uint8_t* memmap[8];
+  extern uint8_t nor_buff[];
+  extern uint32_t NOR_SIZE;
+  extern uint8_t* ram_40;
+  extern int nc3_fastmem_check;
+  if (nc3_fastmem_check) { CStore(addr, a); return; }   /* 检查模式：写一律走慢路 */
+  /* 快路：与 Store() 的判定顺序一致；命中“普通 RAM / 扩展 RAM / ROM 忽略写”
+   * 这几条最常见的情况就直接写。拿不准就落回 CStore()（它会原样重跑一遍，所以
+   * 这里只要“漏判”就会走慢路，不会误判）。 */
+  if (addr >= 0x40u && addr != 0x3fffu) {
+    uint8_t *page = memmap[addr >> 13];
+    if (page < nor_buff || page >= nor_buff + NOR_SIZE) {
+      if (addr < 0x80u) { ram_40[addr - 0x40] = a; return; }
+      if (addr < 0x4000u) { page[addr & 0x1FFF] = a; return; }
+      /* mem.cpp 在 init_mem() 里填好的“可写 RAM 页区间”（见那里的注释）*/
+      extern uint8_t *nc3_wram_b, *nc3_wram_b2, *nc3_wram_lo, *nc3_wram_hi,
+                     *nc3_wext_lo, *nc3_wext_hi;
+      if (page && ((nc3_wram_lo && page >= nc3_wram_lo && page < nc3_wram_hi) ||
+          (nc3_wext_lo && page >= nc3_wext_lo && page < nc3_wext_hi) ||
+          page == nc3_wram_b || page == nc3_wram_b2)) {
+        page[addr & 0x1FFF] = a;
+        return;
+      }
+      if (addr >= 0xE000u) return;      /* ROM：写被丢弃 */
+    }
+  }
   CStore(addr,a);
   /*
   if ((addr >= 0x80)) { 
@@ -256,6 +316,9 @@ int PS();
 void setPS(int ps);
 
 DWORD   CpuExecuteOP();
+/* 线程化（computed goto）批量入口：跑多至 cycle > max_cycles，返回累计周期。
+ * pmcd = &mi_clear_delay（宿主状态），mcdv = mi_clear_delay_value。见 w65c02op.cpp。 */
+DWORD   CpuExecuteOPBatch(DWORD cycle_in, DWORD max_cycles, int *pmcd, int mcdv);
 DWORD   CpuExecuteNMI();
 DWORD   CpuExecuteIRQ();
 #endif

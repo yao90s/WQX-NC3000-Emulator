@@ -530,6 +530,14 @@ void nc3_dsp_stats(void) {
         printf("[jit] dynarec blocks=%u code=%.1f KB flushes=%u\n",
                (unsigned)blk, (double)bytes / 1024.0, (unsigned)fl);
     }
+    {
+        /* NC3_FASTMEM_CHECK=1（w65c02.h 的访存快路差分校验）跑了多少条读 */
+        extern int nc3_fastmem_check;
+        extern uint32_t nc3_fastmem_rd_hits;
+        if (nc3_fastmem_check)
+            printf("[fastmem] 差分校验：快路读 %u 次，无差异（有差异会即时打印 [fastmem] RD ...）\n",
+                   (unsigned)nc3_fastmem_rd_hits);
+    }
 }
 
 int nc3_dsp_audio(int16_t *out, int n) {

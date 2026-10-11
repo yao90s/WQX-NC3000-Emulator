@@ -316,9 +316,6 @@ int PS();
 void setPS(int ps);
 
 DWORD   CpuExecuteOP();
-/* 线程化（computed goto）批量入口：跑多至 cycle > max_cycles，返回累计周期。
- * pmcd = &mi_clear_delay（宿主状态），mcdv = mi_clear_delay_value。见 w65c02op.cpp。 */
-DWORD   CpuExecuteOPBatch(DWORD cycle_in, DWORD max_cycles, int *pmcd, int mcdv);
 DWORD   CpuExecuteNMI();
 DWORD   CpuExecuteIRQ();
 #endif
